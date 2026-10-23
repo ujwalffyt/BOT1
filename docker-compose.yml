@@ -1,0 +1,28 @@
+services:
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2
+    container_name: ujwal-lavalink
+    restart: unless-stopped
+    environment:
+      LAVALINK_PASSWORD: ${LAVALINK_PASSWORD:?Set LAVALINK_PASSWORD in .env}
+      SERVER_PORT: 2333
+    volumes:
+      - ./lavalink.application.yml:/opt/Lavalink/application.yml:ro
+      - lavalink_plugins:/opt/Lavalink/plugins
+    # Expose only for local diagnostics; do not expose the node publicly without firewall/auth.
+    ports:
+      - "127.0.0.1:2333:2333"
+
+  bot:
+    build: .
+    container_name: ujwal-community-guardian
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      lavalink:
+        condition: service_started
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  lavalink_plugins:

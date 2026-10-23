@@ -1,0 +1,21 @@
+{
+  "name": "ujwal-ff-all-in-one-bot",
+  "version": "2.1.0",
+  "private": true,
+  "description": "All-in-one Discord bot with anti-raid, audit logs, moderation, tickets, verification buttons, leveling, polls, Instagram/Kick feed alerts, invite tracking, server-stat channels, economy/games, TTS messages, and Lavalink music.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.17.0"
+  },
+  "scripts": {
+    "deploy": "node src/deploy-commands.js",
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/commands.js && node --check src/store.js && node --check src/deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.6.1",
+    "lavalink-client": "^2.11.0",
+    "rss-parser": "^3.13.0"
+  }
+}
