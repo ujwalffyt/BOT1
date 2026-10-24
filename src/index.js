@@ -689,19 +689,21 @@ async function handlePrefixCommand(message) {
 client.on(Events.ClientReady, async (readyClient) => {
   console.log(`✅ ${readyClient.user.tag} is online (${client.guilds.cache.size} guilds).`);
 
-  // Rotate the bot's activity text and online status.
+  // Rotate help/branding and show the total members across the bot's servers during DND.
   const presenceRotations = [
     { name: '/help | Ujwal Telugu FF Bot', type: 0, status: 'online' },
-    { name: 'Subscribe to Ujwal Telugu FF', type: 3, status: 'dnd' },
     { name: 'Designed by Ujwal Telugu FF', type: 3, status: 'online' },
-    { name: '@Ujwal Telugu FF | Subscribe', type: 0, status: 'dnd' },
-    { name: 'Ujwal Telugu FF Community', type: 3, status: 'online' }
+    { name: 'members', type: 3, status: 'dnd', dynamicMembers: true }
   ];
   let presenceIndex = 0;
   const rotatePresence = () => {
     const presence = presenceRotations[presenceIndex];
+    const totalMembers = readyClient.guilds.cache.reduce((total, guild) => total + (guild.memberCount || 0), 0);
+    const activityName = presence.dynamicMembers
+      ? `Serving ${totalMembers.toLocaleString('en-US')} members`
+      : presence.name;
     readyClient.user.setPresence({
-      activities: [{ name: presence.name, type: presence.type }],
+      activities: [{ name: activityName, type: presence.type }],
       status: presence.status
     });
     presenceIndex = (presenceIndex + 1) % presenceRotations.length;
