@@ -37,6 +37,12 @@ export const commands = [
       .addChannelOption((option) => option.setName('channel').setDescription('Welcome channel').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)))
     .addSubcommand((sub) => sub.setName('logs').setDescription('Set the moderation-log channel')
       .addChannelOption((option) => option.setName('channel').setDescription('Private staff log channel').addChannelTypes(ChannelType.GuildText).setRequired(true)))
+    .addSubcommand((sub) => sub.setName('log-channel').setDescription('Set one of the seven separate log channels')
+      .addStringOption((option) => option.setName('category').setDescription('Which type of events to log').setRequired(true).addChoices(
+        { name: 'Join logs', value: 'join' }, { name: 'Member logs', value: 'members' }, { name: 'Message logs', value: 'messages' },
+        { name: 'Server logs', value: 'server' }, { name: 'Voice logs', value: 'voice' }, { name: 'Role logs', value: 'roles' }, { name: 'Moderation logs', value: 'moderation' }
+      ))
+      .addChannelOption((option) => option.setName('channel').setDescription('Destination log channel').addChannelTypes(ChannelType.GuildText).setRequired(true)))
     .addSubcommand((sub) => sub.setName('suggestions').setDescription('Set the suggestion channel')
       .addChannelOption((option) => option.setName('channel').setDescription('Suggestion channel').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)))
     .addSubcommand((sub) => sub.setName('autorole').setDescription('Set the role given to new members')
