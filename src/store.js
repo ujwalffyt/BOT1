@@ -19,6 +19,7 @@ function defaults() {
   return {
     welcomeChannelId: null,
     modLogChannelId: null,
+    logChannels: { join: null, members: null, messages: null, server: null, voice: null, roles: null, moderation: null },
     suggestionsChannelId: null,
     autoRoleId: null,
     raidAlerts: true,
@@ -48,6 +49,7 @@ export function getGuildConfig(guildId) {
     ...base,
     ...state.guilds[guildId],
     serverStatsChannels: { ...base.serverStatsChannels, ...(state.guilds[guildId].serverStatsChannels || {}) },
+    logChannels: { ...base.logChannels, ...(state.guilds[guildId].logChannels || {}) },
   };
   if (!Array.isArray(state.guilds[guildId].youtubeFeeds)) state.guilds[guildId].youtubeFeeds = [];
   if (!Array.isArray(state.guilds[guildId].instagramFeeds)) state.guilds[guildId].instagramFeeds = [];
@@ -79,6 +81,7 @@ export function listGuildConfigs() {
       inviteStats: config.inviteStats && typeof config.inviteStats === 'object' ? config.inviteStats : {},
       invitedByMember: config.invitedByMember && typeof config.invitedByMember === 'object' ? config.invitedByMember : {},
       serverStatsChannels: { ...base.serverStatsChannels, ...(config.serverStatsChannels || {}) },
+      logChannels: { ...base.logChannels, ...(config.logChannels || {}) },
       youtubeFeeds: Array.isArray(config.youtubeFeeds) ? config.youtubeFeeds : [],
       warnings: config.warnings && typeof config.warnings === 'object' ? config.warnings : {},
       xp: config.xp && typeof config.xp === 'object' ? config.xp : {},

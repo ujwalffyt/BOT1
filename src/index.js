@@ -102,9 +102,18 @@ function getCpuPercent() {
 async function logToGuild(guild, title, description, color = BLUE) {
   if (!guild) return;
   const config = getGuildConfig(guild.id);
-  if (!config.modLogChannelId) return;
-  const channel = guild.channels.cache.get(config.modLogChannelId)
-    || await guild.channels.fetch(config.modLogChannelId).catch(() => null);
+  const t = String(title || '').toLowerCase();
+  let category = 'moderation';
+  if (/join-wave|additional join wave|invite tracked/.test(t)) category = 'join';
+  else if (/message (deleted|edited)/.test(t)) category = 'messages';
+  else if (/voice/.test(t)) category = 'voice';
+  else if (/role /.test(t) || /role (created|deleted|updated|added|removed)/.test(t) || /member roles changed/.test(t)) category = 'roles';
+  else if (/channel |server /.test(t)) category = 'server';
+  else if (/member (joined|left|kicked|banned|unbanned|updated|timeout)|nickname|member timed out/.test(t)) category = 'members';
+  const channelId = config.logChannels?.[category] || config.modLogChannelId;
+  if (!channelId) return;
+  const channel = guild.channels.cache.get(channelId)
+    || await guild.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased?.()) return;
   await channel.send({ embeds: [embed(title, description, color)] }).catch(() => {});
 }
@@ -943,6 +952,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const sub = interaction.options.getSubcommand();
       if (sub === 'welcome') config.welcomeChannelId = interaction.options.getChannel('channel', true).id;
       if (sub === 'logs') config.modLogChannelId = interaction.options.getChannel('channel', true).id;
+      if (sub === 'log-channel') {
+        const category = interaction.options.getString('category', true);
+        config.logChannels ||= { join: null, members: null, messages: null, server: null, voice: null, roles: null, moderation: null };
+        config.logChannels[category] = interaction.options.getChannel('channel', true).id;
+      }
       if (sub === 'suggestions') config.suggestionsChannelId = interaction.options.getChannel('channel', true).id;
       if (sub === 'autorole') {
         const role = interaction.options.getRole('role', true);
@@ -1179,6 +1193,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 client.on(Events.GuildMemberAdd, async (member) => {
   const config = getGuildConfig(member.guild.id);
+  await logToGuild(member.guild, 'Member joined', `Member: ${member.user.tag} (${member.id})\\nAccount created: <t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, GREEN);
   scheduleServerStatsUpdate(member.guild);
   const usedInvite = await detectUsedInvite(member.guild);
   if (usedInvite?.inviter?.id) {
@@ -1216,6 +1231,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
 
 client.on(Events.GuildMemberRemove, async (member) => {
   scheduleServerStatsUpdate(member.guild);
+  await logToGuild(member.guild, 'Member left', `Member: ${member.user?.tag || 'Unknown member'} (${member.id})`, ORANGE);
   const config = getGuildConfig(member.guild.id);
   const inviterId = config.invitedByMember[member.id];
   if (inviterId) {
@@ -1302,6 +1318,21 @@ client.on(Events.GuildRoleUpdate, async (oldRole, newRole) => {
   if (oldRole.position !== newRole.position) changes.push(`Position: ${oldRole.position} → ${newRole.position}`);
   if (oldRole.color !== newRole.color) changes.push('Color changed');
   if (changes.length) await logToGuild(newRole.guild, 'Role updated', `Role: ${newRole.name} (${newRole.id})\n${changes.join('\n')}`, ORANGE);
+});
+
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  const member = newState.member || oldState.member;
+  const guild = newState.guild || oldState.guild;
+  if (!guild || !member || member.user?.bot) return;
+  const before = oldState.channel;
+  const after = newState.channel;
+  if (before?.id === after?.id) return;
+  let title = 'Voice channel updated';
+  let description = `Member: ${member.user.tag} (${member.id})`;
+  if (!before && after) { title = 'Voice joined'; description += `\nJoined: ${after.name}`; }
+  else if (before && !after) { title = 'Voice left'; description += `\nLeft: ${before.name}`; }
+  else if (before && after) { title = 'Voice moved'; description += `\nFrom: ${before.name}\nTo: ${after.name}`; }
+  await logToGuild(guild, title, description, BLUE);
 });
 
 client.on(Events.MessageDelete, async (message) => {
