@@ -16,7 +16,6 @@ import {
   ChannelType,
   version as discordJsVersion
 } from 'discord.js';
-import { LavalinkManager } from 'lavalink-client';
 import { commands } from './commands.js';
 import { getGuildConfig, saveStore, listGuildConfigs } from './store.js';
 
@@ -45,38 +44,6 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message, Partials.GuildMember]
 });
 
-// Lavalink handles the audio connection separately from the Discord bot process.
-// It needs to be reachable and the YouTube source plugin must be loaded.
-client.lavalink = new LavalinkManager({
-  nodes: [{
-    id: 'main',
-    host: process.env.LAVALINK_HOST || '127.0.0.1',
-    port: Number(process.env.LAVALINK_PORT || 2333),
-    authorization: process.env.LAVALINK_PASSWORD || 'change-this-password',
-    secure: String(process.env.LAVALINK_SECURE || 'false').toLowerCase() === 'true',
-    retryAmount: 20,
-    retryDelay: 5000
-  }],
-  sendToShard: (guildId, payload) => {
-    const guild = client.guilds.cache.get(guildId);
-    if (guild?.shard) guild.shard.send(payload);
-  },
-  autoSkip: true,
-  client: {
-    id: process.env.CLIENT_ID,
-    username: APP_NAME
-  },
-  playerOptions: {
-    defaultSearchPlatform: 'ytsearch',
-    applyVolumeAsFilter: false,
-    onDisconnect: { autoReconnect: true, destroyPlayer: false },
-    // An empty queue in normal music mode is cleaned up; 24/7 mode keeps its queue looping.
-    onEmptyQueue: { destroyAfterMs: 30000 },
-    useUnresolvedData: true
-  },
-  linksAllowed: true
-});
-
 const joinTimestamps = new Map();
 const inviteSnapshots = new Map();
 const serverStatsTimers = new Map();
@@ -86,7 +53,6 @@ const duplicateMessages = new Map();
 const cooldowns = new Map();
 const xpCooldowns = new Map();
 const recentModerationActions = new Map();
-let lavalinkConnected = false;
 let lastCpuUsage = process.cpuUsage();
 let lastCpuAt = process.hrtime.bigint();
 let rssPollInFlight = false;
@@ -164,16 +130,6 @@ async function requirePermission(message, permission, name) {
   if (canModerate(message.member, permission)) return true;
   await message.reply(`You need **${name}** permission to use this command.`).catch(() => {});
   return false;
-}
-
-function safeYouTubeUrl(value) {
-  try {
-    const url = new URL(value);
-    return ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'www.youtu.be'].includes(url.hostname.toLowerCase())
-      && ['http:', 'https:'].includes(url.protocol);
-  } catch {
-    return false;
-  }
 }
 
 function validYouTubeChannelId(value) {
@@ -332,124 +288,21 @@ async function awardMessageXP(message, config) {
   }
 }
 
-function getPlayer(guildId) {
-  try { return client.lavalink.getPlayer(guildId) || null; }
-  catch { return null; }
-}
-
-async function createOrMovePlayer(guild, voiceChannelId, textChannelId, volume = 80) {
-  let player = getPlayer(guild.id);
-  if (!player) {
-    player = client.lavalink.createPlayer({
-      guildId: guild.id,
-      voiceChannelId,
-      textChannelId,
-      selfDeaf: true,
-      volume
-    });
-  } else {
-    if (textChannelId) player.textChannelId = textChannelId;
-    if (player.voiceChannelId !== voiceChannelId) {
-      await player.changeVoiceState({ voiceChannelId, selfDeaf: true });
-    }
-  }
-  if (!player.connected) await player.connect();
-  return player;
-}
-
-async function searchTracks(player, query, requester) {
-  const searchQuery = safeYouTubeUrl(query) ? { query } : { query: `ytsearch:${query}` };
-  return player.search(searchQuery, requester, false);
-}
-
-async function queueQuery(player, query, requester, { replace = false, loop = 'off' } = {}) {
-  const result = await searchTracks(player, query, requester);
-  const tracks = Array.isArray(result?.tracks) ? result.tracks : [];
-  if (!tracks.length) return { added: [], playlist: false };
-
-  // Search results commonly contain multiple candidates; only actual playlists should enqueue all of them.
-  let urlLooksLikePlaylist = false;
-  try {
-    const url = new URL(query);
-    urlLooksLikePlaylist = safeYouTubeUrl(query)
-      && (url.searchParams.has('list') || url.pathname.toLowerCase().includes('/playlist'));
-  } catch { /* Search terms are not URLs. */ }
-  const loadType = String(result?.loadType || result?.type || '').toLowerCase();
-  const playlist = loadType.includes('playlist') || urlLooksLikePlaylist;
-  if (replace) await player.stopPlaying(true, false);
-  const chosen = playlist ? tracks : [tracks[0]];
-  player.queue.add(chosen);
-  if (loop !== 'off') await player.setRepeatMode(loop);
-  else await player.setRepeatMode('off');
-  if (!player.playing && !player.paused) await player.play();
-  return { added: chosen, playlist };
-}
-
-async function getOrCreateVoicePlayer(message) {
-  const voiceChannel = message.member?.voice?.channel;
-  if (!voiceChannel) {
-    await message.reply('Join a voice channel first, then use the music command.').catch(() => {});
-    return null;
-  }
-  const botMember = message.guild.members.me;
-  const perms = voiceChannel.permissionsFor(botMember);
-  if (!perms?.has(PermissionFlagsBits.Connect) || !perms?.has(PermissionFlagsBits.Speak)) {
-    await message.reply('I need **Connect** and **Speak** permissions in that voice channel.').catch(() => {});
-    return null;
-  }
-  try {
-    return await createOrMovePlayer(message.guild, voiceChannel.id, message.channel.id, 80);
-  } catch (error) {
-    console.error('Could not join voice channel:', error);
-    await message.reply('I could not connect to voice. Check that Lavalink is online and that I have Connect/Speak permissions.').catch(() => {});
-    return null;
-  }
-}
-
-async function restore247Players() {
-  if (!client.isReady() || !lavalinkConnected) return;
-  for (const [guildId, config] of listGuildConfigs()) {
-    const music = config.music247;
-    if (!music?.enabled || !music.voiceChannelId || !music.url) continue;
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) continue;
-    try {
-      const voiceChannel = guild.channels.cache.get(music.voiceChannelId)
-        || await guild.channels.fetch(music.voiceChannelId).catch(() => null);
-      if (!voiceChannel || !voiceChannel.isVoiceBased?.()) {
-        console.warn(`24/7 channel ${music.voiceChannelId} missing for guild ${guildId}; skipping restore.`);
-        continue;
-      }
-      const player = await createOrMovePlayer(guild, voiceChannel.id, music.textChannelId || voiceChannel.id, music.volume || 70);
-      // On a bot/Lavalink restart the in-memory queue may be empty; restore the configured source.
-      if (!player.playing && !player.queue.current && !player.queue.tracks.length) {
-        const result = await queueQuery(player, music.url, client.user, { replace: false, loop: music.repeatMode || 'track' });
-        if (!result.added.length) await logToGuild(guild, '24/7 music restore failed', 'The saved YouTube source could not be loaded. YouTube may be rate-limiting the server or the video may be unavailable.', ORANGE);
-      }
-    } catch (error) {
-      console.error(`24/7 restore failed for guild ${guildId}:`, error?.message || error);
-    }
-  }
-}
-
 function botStatsEmbed() {
   const cpu = getCpuPercent();
   const mem = process.memoryUsage();
   const osTotal = os.totalmem();
   const osFree = os.freemem();
-  const players = client.guilds.cache.reduce((count, guild) => count + (getPlayer(guild.id) ? 1 : 0), 0);
   return embed('🤖 Bot system stats', 'Live process and connection diagnostics.', GREEN)
     .addFields(
       { name: 'Status', value: '🟢 Online', inline: true },
       { name: 'Discord ping', value: `${Math.max(0, Math.round(client.ws.ping))} ms`, inline: true },
-      { name: 'Lavalink', value: lavalinkConnected ? '🟢 Connected' : '🔴 Disconnected', inline: true },
       { name: 'Process CPU', value: `${cpu.toFixed(1)}% of one core`, inline: true },
       { name: 'Process RAM (RSS)', value: formatBytes(mem.rss), inline: true },
       { name: 'Node heap', value: `${formatBytes(mem.heapUsed)} / ${formatBytes(mem.heapTotal)}`, inline: true },
       { name: 'OS-reported RAM', value: `${formatBytes(osTotal - osFree)} / ${formatBytes(osTotal)}`, inline: true },
       { name: 'Uptime', value: formatDuration(process.uptime() * 1000), inline: true },
       { name: 'Guilds', value: String(client.guilds.cache.size), inline: true },
-      { name: 'Music sessions', value: String(players), inline: true },
       { name: 'YouTube feeds', value: String(listGuildConfigs().reduce((count, [, config]) => count + config.youtubeFeeds.length, 0)), inline: true },
       { name: 'Instagram feeds', value: String(listGuildConfigs().reduce((count, [, config]) => count + config.instagramFeeds.length, 0)), inline: true },
       { name: 'Kick feeds', value: String(listGuildConfigs().reduce((count, [, config]) => count + config.kickFeeds.length, 0)), inline: true },
@@ -490,8 +343,6 @@ async function handlePrefixCommand(message) {
         { name: 'Status and community', value: '`.stats` · `.ping` · `.help` · `.level [@user]` · `.leaderboard` · `.avatar [@user]` · `/poll`', inline: false },
         { name: 'Invite and server stats', value: '`.invites [@user]` · `.inviteleaderboard` · `.invites reset @user` (staff) · `.serverstats setup|refresh|status|remove` (Manage Channels)', inline: false },
         { name: 'Economy and games', value: '`.balance` · `.daily` · `.work` · `.beg` · `.deposit all` · `.withdraw all` · `.pay @user amount` · `.coinflip bet heads|tails` · `.slots bet` · `.topmoney` · `.truthordare truth|dare` · `.8ball question` · `.rps rock|paper|scissors` · `.tts text`', inline: false },
-        { name: 'Music', value: '`.play <YouTube URL or search>` · `.join` · `.pause` · `.resume` · `.skip` · `.stop` · `.queue` · `.np` · `.volume 0-100` · `.loop off|track|queue`', inline: false },
-        { name: '24/7 Music', value: '`.247 set <YouTube URL>` saves a source, joins your current voice channel and loops it. `.247 status` · `.247 off`', inline: false },
         { name: 'Moderation', value: '`.warn @user reason` · `.timeout @user 10m reason` · `.kick @user reason` · `.ban @user reason` · `.purge 10` · `.lock` · `.unlock` · `.slowmode seconds`', inline: false },
         { name: 'Anti-raid', value: '`.raidmode on|off|status` (requires Manage Server). Join waves trigger alerts and stricter content filtering.', inline: false },
         { name: 'Creator alerts', value: 'Configure with `/config youtube-add`, `/config instagram-add`, and `/config kick-add`. Instagram and Kick alerts require compatible HTTPS RSS/Atom feed URLs from a provider; profile links alone are not feeds.', inline: false },
@@ -723,148 +574,6 @@ async function handlePrefixCommand(message) {
     return message.reply({ embeds: [embed(`Avatar: ${user.username}`, user.displayAvatarURL({ size: 1024 }), BLUE).setImage(user.displayAvatarURL({ size: 1024 }))] }).catch(() => {});
   }
 
-  if (['join', 'play', 'pause', 'resume', 'skip', 'stop', 'queue', 'np', 'nowplaying', 'volume', 'loop', 'leave', '247'].includes(command)) {
-    if (command === 'join') {
-      const player = await getOrCreateVoicePlayer(message);
-      if (player) await message.reply(`✅ Joined **${message.member.voice.channel.name}**.`).catch(() => {});
-      return;
-    }
-    if (command === 'play') {
-      if (!argsText) return message.reply('Usage: `.play <YouTube URL or search terms>`').catch(() => {});
-      const player = await getOrCreateVoicePlayer(message);
-      if (!player) return;
-      try {
-        const result = await queueQuery(player, argsText, message.author);
-        if (!result.added.length) return message.reply('No playable tracks were found. Check the YouTube URL or try another search.').catch(() => {});
-        const first = result.added[0];
-        const title = first?.info?.title || 'Unknown track';
-        const uri = first?.info?.uri;
-        await message.reply({ embeds: [embed(result.playlist ? '📚 Added playlist' : '🎶 Added to queue', `**${truncate(title, 180)}**${uri ? `\n${uri}` : ''}\nTracks added: **${result.added.length}**`, GREEN)] }).catch(() => {});
-      } catch (error) {
-        console.error('Music play error:', error);
-        await message.reply('Music could not load this source. Check that Lavalink is connected and the YouTube source plugin is working.').catch(() => {});
-      }
-      return;
-    }
-    if (command === '247') {
-      const sub = (args[0] || 'status').toLowerCase();
-      if (sub === 'status') {
-        const cfg = guildConfig.music247 || {};
-        return message.reply(`**24/7 mode:** ${cfg.enabled ? '🟢 ON' : '⚪ OFF'}${cfg.voiceChannelId ? `\nVoice channel: <#${cfg.voiceChannelId}>` : ''}${cfg.url ? `\nSaved source: ${cfg.url}` : '\nNo source saved yet. Use `.247 set <YouTube URL>`.'}`).catch(() => {});
-      }
-      if (sub === 'off' || sub === 'disable') {
-        guildConfig.music247 = { ...(guildConfig.music247 || {}), enabled: false };
-        saveStore();
-        if (getPlayer(message.guild.id)) await getPlayer(message.guild.id).setRepeatMode('off').catch(() => {});
-        return message.reply('✅ 24/7 mode disabled. The music player may finish its current queue normally.').catch(() => {});
-      }
-      if (sub === 'set') {
-        const url = args.slice(1).join(' ').trim();
-        if (!safeYouTubeUrl(url)) return message.reply('Usage: `.247 set <YouTube video or playlist URL>` — only YouTube links are accepted here.').catch(() => {});
-        const player = await getOrCreateVoicePlayer(message);
-        if (!player) return;
-        guildConfig.music247 = {
-          enabled: true,
-          voiceChannelId: message.member.voice.channel.id,
-          textChannelId: message.channel.id,
-          url,
-          volume: Number(guildConfig.music247?.volume || 70),
-          repeatMode: 'track'
-        };
-        saveStore();
-        try {
-          const result = await queueQuery(player, url, message.author, { replace: true, loop: 'track' });
-          if (!result.added.length) {
-            guildConfig.music247.enabled = false;
-            saveStore();
-            return message.reply('I saved the 24/7 settings, but could not load that URL. Mode has been switched back off. Please try a different YouTube link.').catch(() => {});
-          }
-          guildConfig.music247.repeatMode = result.playlist ? 'queue' : 'track';
-          await player.setRepeatMode(guildConfig.music247.repeatMode);
-          saveStore();
-          return message.reply(`🔁 **24/7 mode is ON.** I will stay in <#${guildConfig.music247.voiceChannelId}> and repeat ${result.playlist ? 'the playlist' : 'the track'} while the bot host and YouTube source remain available.`).catch(() => {});
-        } catch (error) {
-          console.error('24/7 setup error:', error);
-          guildConfig.music247.enabled = false;
-          saveStore();
-          return message.reply('I could not start 24/7 playback. Check Lavalink and the YouTube URL.').catch(() => {});
-        }
-      }
-      return message.reply('Usage: `.247 set <YouTube URL>`, `.247 status`, or `.247 off`.').catch(() => {});
-    }
-
-    let player = getPlayer(message.guild.id);
-    if (command === 'leave') {
-      if (!player) return message.reply('I am not connected to a voice channel.').catch(() => {});
-      if (guildConfig.music247?.enabled) return message.reply('24/7 mode is enabled. Use `.247 off` first, then `.leave`.').catch(() => {});
-      await player.destroy();
-      return message.reply('👋 Left the voice channel.').catch(() => {});
-    }
-    if (!player) return message.reply('There is no active music session. Use `.play <YouTube URL>` first.').catch(() => {});
-
-    const voiceChannel = message.member?.voice?.channel;
-    if (['pause', 'resume', 'skip', 'stop', 'volume', 'loop'].includes(command) && voiceChannel && player.voiceChannelId !== voiceChannel.id) {
-      return message.reply('Join the same voice channel as the bot to control playback.').catch(() => {});
-    }
-
-    try {
-      if (command === 'pause') {
-        await player.pause();
-        return message.reply('⏸️ Paused.').catch(() => {});
-      }
-      if (command === 'resume') {
-        await player.resume();
-        return message.reply('▶️ Resumed.').catch(() => {});
-      }
-      if (command === 'skip') {
-        if (!player.queue.current && !player.playing) return message.reply('Nothing is playing right now.').catch(() => {});
-        await player.skip(0, false);
-        return message.reply('⏭️ Skipped.').catch(() => {});
-      }
-      if (command === 'stop') {
-        if (guildConfig.music247?.enabled && guildConfig.music247.url) {
-          return message.reply('24/7 mode is keeping a source on repeat. Use `.247 off` to disable it before stopping.').catch(() => {});
-        }
-        await player.stopPlaying(true, false);
-        return message.reply('⏹️ Playback stopped and the queue was cleared.').catch(() => {});
-      }
-      if (command === 'np' || command === 'nowplaying') {
-        const current = player.queue.current;
-        if (!current) return message.reply('Nothing is playing right now.').catch(() => {});
-        return message.reply({ embeds: [embed('🎶 Now playing', `**${truncate(current.info?.title || 'Unknown track', 200)}**\n${current.info?.uri || ''}\nRequested by: ${current.requester?.username || current.requester?.tag || 'Unknown'}`, GREEN)] }).catch(() => {});
-      }
-      if (command === 'queue') {
-        const current = player.queue.current;
-        const upcoming = (player.queue.tracks || []).slice(0, 10);
-        const lines = [];
-        if (current) lines.push(`**Now:** ${truncate(current.info?.title || 'Unknown', 120)}`);
-        upcoming.forEach((track, index) => lines.push(`**${index + 1}.** ${truncate(track.info?.title || 'Unknown', 100)}`));
-        if (!lines.length) lines.push('The queue is empty.');
-        return message.reply({ embeds: [embed(`📃 Queue (${player.queue.tracks?.length || 0} upcoming)`, lines.join('\n'), BLUE)] }).catch(() => {});
-      }
-      if (command === 'volume') {
-        const volume = Number(args[0]);
-        if (!Number.isInteger(volume) || volume < 0 || volume > 100) return message.reply('Usage: `.volume 0-100`').catch(() => {});
-        await player.setVolume(volume);
-        if (guildConfig.music247?.enabled) {
-          guildConfig.music247.volume = volume;
-          saveStore();
-        }
-        return message.reply(`🔊 Volume set to **${volume}%**.`).catch(() => {});
-      }
-      if (command === 'loop') {
-        const mode = (args[0] || '').toLowerCase();
-        if (!['off', 'track', 'queue'].includes(mode)) return message.reply('Usage: `.loop off`, `.loop track`, or `.loop queue`.').catch(() => {});
-        await player.setRepeatMode(mode);
-        return message.reply(`🔁 Repeat mode set to **${mode}**.`).catch(() => {});
-      }
-    } catch (error) {
-      console.error(`Music command ${command} failed:`, error);
-      await message.reply('That music action failed. Check Lavalink connection status with `.stats`.').catch(() => {});
-    }
-    return;
-  }
-
   if (command === 'raidmode') {
     if (!(await requirePermission(message, PermissionFlagsBits.ManageGuild, 'Manage Server'))) return;
     const mode = (args[0] || '').toLowerCase();
@@ -970,11 +679,6 @@ async function handlePrefixCommand(message) {
 
 client.on(Events.ClientReady, async (readyClient) => {
   console.log(`✅ ${readyClient.user.tag} is online (${client.guilds.cache.size} guilds).`);
-  try {
-    client.lavalink.init({ id: readyClient.user.id, username: readyClient.user.username });
-  } catch (error) {
-    console.error('Lavalink init error:', error);
-  }
   // Presence text stays simple to avoid decorative status spam.
   readyClient.user.setPresence({ activities: [{ name: `${PREFIX}help | Ujwal Telugu FF Bot` }], status: 'online' });
   setTimeout(() => {
@@ -995,56 +699,6 @@ client.on(Events.InviteCreate, (invite) => {
 client.on(Events.InviteDelete, (invite) => {
   const snapshot = inviteSnapshots.get(invite.guild?.id);
   if (snapshot && invite.code) snapshot.delete(invite.code);
-});
-
-client.on('raw', (packet) => {
-  try { client.lavalink.sendRawData(packet); }
-  catch (error) { console.error('Could not forward raw voice packet:', error?.message || error); }
-});
-
-client.lavalink.nodeManager.on('connect', (node) => {
-  lavalinkConnected = true;
-  console.log(`🎵 Lavalink node "${node.id}" connected.`);
-  try { node.updateSession(true, 300000); } catch { /* session resume is optional */ }
-  setTimeout(() => restore247Players().catch((error) => console.error('24/7 restore:', error)), 2500);
-});
-client.lavalink.nodeManager.on('disconnect', (node, reason) => {
-  lavalinkConnected = false;
-  console.warn(`Lavalink node "${node.id}" disconnected:`, reason || 'no reason supplied');
-});
-client.lavalink.nodeManager.on('reconnecting', (node) => console.warn(`Reconnecting Lavalink node "${node.id}"…`));
-client.lavalink.nodeManager.on('error', (node, error) => console.error(`Lavalink node "${node.id}" error:`, error?.message || error));
-client.lavalink.on('trackStart', (player, track) => {
-  const channel = player.textChannelId ? client.channels.cache.get(player.textChannelId) : null;
-  if (channel?.isTextBased?.()) channel.send({ embeds: [embed('🎶 Now playing', `**${truncate(track?.info?.title || 'Unknown track', 180)}**\n${track?.info?.uri || ''}`, GREEN)] }).catch(() => {});
-});
-client.lavalink.on('trackError', (player, track, payload) => {
-  console.warn(`Track error in guild ${player.guildId}:`, payload?.exception?.message || payload?.error || 'unknown error');
-  const guild = client.guilds.cache.get(player.guildId);
-  logToGuild(guild, 'Music source error', `Track: ${truncate(track?.info?.title || 'Unknown track', 150)}\nThe source may be unavailable or YouTube may be rate-limiting.`, ORANGE).catch(() => {});
-});
-client.lavalink.on('trackStuck', (player, track, payload) => {
-  console.warn(`Track stuck in guild ${player.guildId}:`, payload);
-  const guild = client.guilds.cache.get(player.guildId);
-  logToGuild(guild, 'Music playback stalled', `Track: ${truncate(track?.info?.title || 'Unknown track', 150)}`, ORANGE).catch(() => {});
-});
-client.lavalink.on('queueEnd', async (player) => {
-  const guild = client.guilds.cache.get(player.guildId);
-  if (!guild) return;
-  const config = getGuildConfig(guild.id);
-  const music = config.music247;
-  if (music?.enabled && music.url) {
-    try {
-      const result = await queueQuery(player, music.url, client.user, { replace: false, loop: music.repeatMode || 'track' });
-      if (result.added.length) return;
-      await logToGuild(guild, '24/7 music paused', 'The saved source did not return any tracks. Check the YouTube link and Lavalink logs.', ORANGE);
-    } catch (error) {
-      console.error('24/7 queue restart failed:', error);
-      await logToGuild(guild, '24/7 music restart failed', 'Playback could not restart after the queue ended. Check Lavalink and YouTube availability.', ORANGE);
-    }
-    return;
-  }
-  await logToChannel(guild, player.textChannelId, '✅ Queue finished. Use `.play <YouTube URL>` to add more music.');
 });
 
 async function handleButtonInteraction(interaction) {
@@ -1174,7 +828,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ embeds: [botStatsEmbed()], ephemeral: true });
     }
     if (commandName === 'help') {
-      return interaction.reply({ embeds: [embed('🛡️ Ujwal Telugu FF All-in-One', `Prefix: \`${PREFIX}\`\nMusic: \`.play\`, \`.queue\`, \`.247 set <YouTube URL>\`\nSecurity: \`.raidmode on|off\`, \`.warn\`, \`.kick\`, \`.ban\`, \`.purge\`\nCommunity: \`.level\`, \`.leaderboard\`, \`.invites\`, \`.serverstats setup\`\nEconomy: \`.daily\`, \`.work\`, \`.balance\`, \`.pay\`, \`.coinflip\`, \`.slots\`\nFun: \`.truthordare\`, \`.8ball\`, \`.rps\`, \`.tts\`\nAlerts: configure YouTube, Instagram and Kick feeds with the config commands.\nSystem: \`.stats\``, BLUE)], ephemeral: true });
+      return interaction.reply({ embeds: [embed('🛡️ Ujwal Telugu FF All-in-One', `Prefix: \`${PREFIX}\`\nSecurity: \`.raidmode on|off\`, \`.warn\`, \`.kick\`, \`.ban\`, \`.purge\`\nCommunity: \`.level\`, \`.leaderboard\`, \`.invites\`, \`.serverstats setup\`\nEconomy: \`.daily\`, \`.work\`, \`.balance\`, \`.pay\`, \`.coinflip\`, \`.slots\`\nFun: \`.truthordare\`, \`.8ball\`, \`.rps\`, \`.tts\`\nAlerts: configure YouTube, Instagram and Kick feeds with the config commands.\nSystem: \`.stats\``, BLUE)], ephemeral: true });
     }
     if (commandName === 'serverinfo') {
       const guild = interaction.guild;
