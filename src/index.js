@@ -688,8 +688,29 @@ async function handlePrefixCommand(message) {
 
 client.on(Events.ClientReady, async (readyClient) => {
   console.log(`✅ ${readyClient.user.tag} is online (${client.guilds.cache.size} guilds).`);
-  // Presence text stays simple to avoid decorative status spam.
-  readyClient.user.setPresence({ activities: [{ name: `${PREFIX}help | Ujwal Telugu FF Bot` }], status: 'online' });
+
+  // Rotate help/branding and show the total members across the bot's servers during DND.
+  const presenceRotations = [
+    { name: '/help | Ujwal Telugu FF Bot', type: 0, status: 'online' },
+    { name: 'Designed by Ujwal Telugu FF', type: 3, status: 'online' },
+    { name: 'members', type: 3, status: 'dnd', dynamicMembers: true }
+  ];
+  let presenceIndex = 0;
+  const rotatePresence = () => {
+    const presence = presenceRotations[presenceIndex];
+    const totalMembers = readyClient.guilds.cache.reduce((total, guild) => total + (guild.memberCount || 0), 0);
+    const activityName = presence.dynamicMembers
+      ? `Serving ${totalMembers.toLocaleString('en-US')} members`
+      : presence.name;
+    readyClient.user.setPresence({
+      activities: [{ name: activityName, type: presence.type }],
+      status: presence.status
+    });
+    presenceIndex = (presenceIndex + 1) % presenceRotations.length;
+  };
+  rotatePresence();
+  const presenceTimer = setInterval(rotatePresence, 60_000);
+  presenceTimer.unref?.();
   setTimeout(() => {
     pollYouTubeFeeds().catch((error) => console.error('Initial YouTube poll error:', error));
     pollInstagramFeeds().catch((error) => console.error('Initial Instagram poll error:', error));
