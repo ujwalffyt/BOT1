@@ -2,7 +2,7 @@ import { SlashCommandBuilder, ChannelType } from 'discord.js';
 
 export const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Check whether the bot is responding.'),
-  new SlashCommandBuilder().setName('stats').setDescription('Show bot CPU, RAM, uptime, latency, and music-node status.'),
+  new SlashCommandBuilder().setName('stats').setDescription('Show bot CPU, RAM, uptime, and Discord latency.'),
   new SlashCommandBuilder().setName('help').setDescription('Show the bot features and commands.'),
   new SlashCommandBuilder().setName('serverinfo').setDescription('Show basic information about this server.'),
   new SlashCommandBuilder().setName('userinfo').setDescription('Show basic information about a server member.')

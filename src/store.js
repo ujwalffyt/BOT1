@@ -38,7 +38,6 @@ function defaults() {
     ticketSupportRoleId: null,
     ticketCategoryId: null,
     verifiedRoleId: null,
-    music247: { enabled: false, voiceChannelId: null, textChannelId: null, url: null, volume: 70, repeatMode: 'track' }
   };
 }
 
@@ -49,7 +48,6 @@ export function getGuildConfig(guildId) {
     ...base,
     ...state.guilds[guildId],
     serverStatsChannels: { ...base.serverStatsChannels, ...(state.guilds[guildId].serverStatsChannels || {}) },
-    music247: { ...base.music247, ...(state.guilds[guildId].music247 || {}) }
   };
   if (!Array.isArray(state.guilds[guildId].youtubeFeeds)) state.guilds[guildId].youtubeFeeds = [];
   if (!Array.isArray(state.guilds[guildId].instagramFeeds)) state.guilds[guildId].instagramFeeds = [];
@@ -84,7 +82,6 @@ export function listGuildConfigs() {
       youtubeFeeds: Array.isArray(config.youtubeFeeds) ? config.youtubeFeeds : [],
       warnings: config.warnings && typeof config.warnings === 'object' ? config.warnings : {},
       xp: config.xp && typeof config.xp === 'object' ? config.xp : {},
-      music247: { ...base.music247, ...(config.music247 || {}) }
     }];
   });
 }
