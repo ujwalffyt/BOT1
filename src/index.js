@@ -107,7 +107,7 @@ async function logToGuild(guild, title, description, color = BLUE) {
   if (/join-wave|additional join wave|invite tracked/.test(t)) category = 'join';
   else if (/message (deleted|edited)/.test(t)) category = 'messages';
   else if (/voice/.test(t)) category = 'voice';
-  else if (/role /.test(t) || /role (created|deleted|updated|added|removed)/.test(t)) category = 'roles';
+  else if (/role /.test(t) || /role (created|deleted|updated|added|removed)/.test(t) || /member roles changed/.test(t)) category = 'roles';
   else if (/channel |server /.test(t)) category = 'server';
   else if (/member (joined|left|kicked|banned|unbanned|updated|timeout)|nickname|member timed out/.test(t)) category = 'members';
   const channelId = config.logChannels?.[category] || config.modLogChannelId;
@@ -1193,6 +1193,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 client.on(Events.GuildMemberAdd, async (member) => {
   const config = getGuildConfig(member.guild.id);
+  await logToGuild(member.guild, 'Member joined', `Member: ${member.user.tag} (${member.id})\\nAccount created: <t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, GREEN);
   scheduleServerStatsUpdate(member.guild);
   const usedInvite = await detectUsedInvite(member.guild);
   if (usedInvite?.inviter?.id) {
@@ -1230,6 +1231,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
 
 client.on(Events.GuildMemberRemove, async (member) => {
   scheduleServerStatsUpdate(member.guild);
+  await logToGuild(member.guild, 'Member left', `Member: ${member.user?.tag || 'Unknown member'} (${member.id})`, ORANGE);
   const config = getGuildConfig(member.guild.id);
   const inviterId = config.invitedByMember[member.id];
   if (inviterId) {
